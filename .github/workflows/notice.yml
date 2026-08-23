@@ -1,0 +1,39 @@
+name: Inha Notice Crawler & Mailer
+
+on:
+  schedule:
+    # 매일 한국 시간 오전 10:00 실행 (UTC 기준 01:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 웹에서 수동 실행(테스트) 버튼 활성화
+
+jobs:
+  crawl-and-notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 히스토리 저장을 위한 권한
+
+    steps:
+      - name: 코드시스템 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 환경 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 라이브러리 설치
+        run: pip install requests beautifulsoup4
+
+      - name: 크롤러 실행 및 Gmail 전송
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_KEY: ${{ secrets.GMAIL_APP_KEY }}
+        run: python main.py
+
+      - name: 중복 발송 방지 히스토리 커밋
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_notices.json || exit 0
+          git commit -m "Update seen notices history" || exit 0
+          git push
