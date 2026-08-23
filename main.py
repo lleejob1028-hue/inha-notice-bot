@@ -1,15 +1,15 @@
 import json
 import os
-import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
 import requests
 
-# 환경 변수 (GitHub Secrets에서 주입)
+# 환경 변수 (GitHub Secrets)
 GMAIL_USER = os.environ.get("GMAIL_USER")
 GMAIL_APP_KEY = os.environ.get("GMAIL_APP_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 URLS = {
     "인하대 메인 공지": "https://www.inha.ac.kr/kr/950/subview.do",
@@ -75,6 +75,55 @@ HEADERS = {
 HISTORY_FILE = "seen_notices.json"
 
 
+def summarize_with_gemini(title, body_text):
+  """Gemini AI에게 공지 본문을 전달하여 핵심 일정 및 3줄 요약 생성"""
+  if not GEMINI_API_KEY:
+    return body_text[:160] + "...", "일정 정보 본문 참조"
+
+  endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+  prompt = f"""
+    당신은 대학생을 위한 학사/공지 전문 분석 AI 비서입니다.
+    아래 대학교 공지사항의 제목과 본문을 읽고, 지원 대상 학생이 한눈에 파악할 수 있도록 핵심을 요약해주세요.
+
+    [공지 제목]: {title}
+    [공지 본문]:
+    {body_text[:2500]}
+
+    반드시 아래 JSON 형식으로만 순수 텍스트(Markdown 코드블록 없이)로 출력하세요:
+    {{
+      "deadline": "정확한 마감/신청/운영 기간 (연도.월.일 형식 포함, 없으면 '상세 본문 참조')",
+      "target": "지원 대상 및 자격 요건 (1문장)",
+      "bullets": [
+        "핵심 내용 요약 1",
+        "핵심 내용 요약 2",
+        "핵심 내용 요약 3"
+      ]
+    }}
+    """
+  try:
+    res = requests.post(
+        endpoint,
+        json={"contents": [{"parts": [{"text": prompt}]}]},
+        timeout=15,
+    )
+    res_data = res.json()
+    raw_response = res_data["candidates"][0]["content"]["parts"][0][
+        "text"
+    ].strip()
+    clean_json = (
+        raw_response.replace("```json", "").replace("```", "").strip()
+    )
+    data = json.loads(clean_json)
+    return data
+  except Exception as e:
+    print(f"Gemini API 호출 예외: {e}")
+    return {
+        "deadline": "공지 본문 참조",
+        "target": "상세 내용 확인",
+        "bullets": [body_text[:160] + "..."],
+    }
+
+
 def classify_title(title):
   for ex in EXCLUDE_KEYWORDS:
     if ex in title:
@@ -88,35 +137,6 @@ def classify_title(title):
       if any(k1 in title for k1 in kws1) and any(k2 in title for k2 in kws2):
         matched.append(cat_name)
   return matched if matched else None
-
-
-def extract_notice_details(detail_url):
-  try:
-    res = requests.get(detail_url, headers=HEADERS, timeout=10)
-    res.encoding = "utf-8"
-    soup = BeautifulSoup(res.text, "html.parser")
-    body_elem = soup.select_one(
-        ".artclView, .view-con, .view-content, .board-view-content"
-    )
-    if not body_elem:
-      return "본문 상세는 링크를 참조하세요.", "본문 일정 참조"
-
-    body_text = " ".join(body_elem.get_text().split())
-    date_patterns = [
-        r"(?:신청|접수|운영|제출|기한|기간|일시)\s*[:~]\s*([0-9]{4}[.\-/][0-9]{1,2}[.\-/][0-9]{1,2}.*?(?:[0-9]{1,2}:[0-9]{2}|~|\))?)",
-        r"([0-9]{4}\.\s*[0-9]{1,2}\.\s*[0-9]{1,2}\s*\(.+?\)\s*~\s*[0-9]{4}\.\s*[0-9]{1,2}\.\s*[0-9]{1,2})",
-        r"(~\s*[0-9]{4}[.\-/][0-9]{1,2}[.\-/][0-9]{1,2})",
-    ]
-    deadline_info = "본문 참조"
-    for pattern in date_patterns:
-      match = re.search(pattern, body_text)
-      if match:
-        deadline_info = match.group(0).strip()
-        break
-    summary = body_text[:160] + "..." if len(body_text) > 160 else body_text
-    return summary, deadline_info
-  except Exception:
-    return "본문 로딩 실패", "확인 불가"
 
 
 def fetch_all_notices():
@@ -160,13 +180,25 @@ def fetch_all_notices():
   return collected
 
 
+def get_notice_body(detail_url):
+  try:
+    res = requests.get(detail_url, headers=HEADERS, timeout=10)
+    res.encoding = "utf-8"
+    soup = BeautifulSoup(res.text, "html.parser")
+    body_elem = soup.select_one(
+        ".artclView, .view-con, .view-content, .board-view-content"
+    )
+    return " ".join(body_elem.get_text().split()) if body_elem else ""
+  except Exception:
+    return ""
+
+
 def send_email(subject, html_content):
   if not GMAIL_USER or not GMAIL_APP_KEY:
-    print("이메일 환경변수가 없습니다.")
     return
   msg = MIMEMultipart("alternative")
   msg["Subject"] = subject
-  msg["From"] = f"인하대 공지 알리미 <{GMAIL_USER}>"
+  msg["From"] = f"인하대 AI 공지 알리미 <{GMAIL_USER}>"
   msg["To"] = GMAIL_USER
   msg.attach(MIMEText(html_content, "html", "utf-8"))
 
@@ -190,9 +222,9 @@ def main():
 
   for item in current_notices:
     if item["link"] not in seen_notices:
-      summary, deadline = extract_notice_details(item["link"])
-      item["summary"] = summary
-      item["deadline"] = deadline
+      body_text = get_notice_body(item["link"])
+      ai_result = summarize_with_gemini(item["title"], body_text)
+      item["ai_data"] = ai_result
       new_items.append(item)
       seen_notices.add(item["link"])
 
@@ -200,19 +232,30 @@ def main():
     json.dump(list(seen_notices), f, ensure_ascii=False, indent=2)
 
   if new_items:
-    subject = f"🔔 [인하대/신소재] 새 맞춤 공지 {len(new_items)}건 도착"
+    subject = f"🤖 [AI 브리핑] 인하대 맞춤 신규 공지 {len(new_items)}건"
     html = """
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-            <h2 style="color: #0b57d0; border-bottom: 2px solid #0b57d0; padding-bottom: 8px;">📢 새 맞춤 공지사항 알림</h2>
+        <div style="font-family: Arial, sans-serif; max-width: 620px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+            <h2 style="color: #0b57d0; border-bottom: 2px solid #0b57d0; padding-bottom: 8px;">🤖 인하대 AI 핵심 공지 브리핑</h2>
         """
     for idx, n in enumerate(new_items, 1):
+      ai = n["ai_data"]
+      bullets_html = "".join([
+          f"<li style='margin-bottom: 4px;'>{b}</li>"
+          for b in ai.get("bullets", [])
+      ])
       html += f"""
-            <div style="margin-bottom: 20px; padding: 12px; background-color: #f8f9fa; border-radius: 6px;">
-                <span style="background-color: #0b57d0; color: white; padding: 3px 8px; font-size: 12px; border-radius: 4px;">{', '.join(n['categories'])}</span>
-                <h3 style="margin: 8px 0 6px 0; font-size: 16px; color: #202124;">{idx}. {n['title']}</h3>
-                <p style="margin: 4px 0; font-size: 13px; color: #5f6368;"><strong>📅 일정:</strong> {n['deadline']}</p>
-                <p style="margin: 6px 0; font-size: 13px; color: #3c4043; line-height: 1.4;">{n['summary']}</p>
-                <a href="{n['link']}" target="_blank" style="display: inline-block; margin-top: 6px; padding: 6px 12px; background-color: #1a73e8; color: white; text-decoration: none; border-radius: 4px; font-size: 12px;">공지 본문 바로가기 →</a>
+            <div style="margin-bottom: 22px; padding: 14px; background-color: #f8f9fa; border-left: 4px solid #0b57d0; border-radius: 4px;">
+                <span style="background-color: #0b57d0; color: white; padding: 3px 8px; font-size: 11px; border-radius: 3px; font-weight: bold;">{', '.join(n['categories'])}</span>
+                <h3 style="margin: 8px 0; font-size: 15px; color: #202124;">{idx}. {n['title']}</h3>
+                <p style="margin: 4px 0; font-size: 13px; color: #d93025;"><strong>📅 일정:</strong> {ai.get('deadline', '본문 참조')}</p>
+                <p style="margin: 4px 0; font-size: 13px; color: #1e8e3e;"><strong>🎯 대상:</strong> {ai.get('target', '상세 확인')}</p>
+                <div style="margin-top: 8px; font-size: 13px; color: #3c4043; line-height: 1.5;">
+                    <strong>📝 AI 핵심 요약:</strong>
+                    <ul style="margin: 4px 0 0 16px; padding: 0;">{bullets_html}</ul>
+                </div>
+                <div style="margin-top: 10px;">
+                    <a href="{n['link']}" target="_blank" style="display: inline-block; padding: 6px 12px; background-color: #1a73e8; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: bold;">원문 공지 바로가기 →</a>
+                </div>
             </div>
             """
     html += "</div>"
