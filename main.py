@@ -76,27 +76,30 @@ HISTORY_FILE = "seen_notices.json"
 
 
 def summarize_with_gemini(title, body_text):
-  """Gemini AI에게 공지 본문을 전달하여 핵심 일정 및 3줄 요약 생성"""
   if not GEMINI_API_KEY:
-    return body_text[:160] + "...", "일정 정보 본문 참조"
+    return {
+        "deadline": "공지 본문 참조",
+        "target": "상세 내용 확인",
+        "bullets": [body_text[:160] + "..."],
+    }
 
   endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
   prompt = f"""
-    당신은 대학생을 위한 학사/공지 전문 분석 AI 비서입니다.
-    아래 대학교 공지사항의 제목과 본문을 읽고, 지원 대상 학생이 한눈에 파악할 수 있도록 핵심을 요약해주세요.
+    당신은 대학교 공지 전문 분석 AI 비서입니다.
+    아래 공지사항을 읽고 학생이 한눈에 파악할 수 있도록 핵심을 요약해주세요.
 
     [공지 제목]: {title}
     [공지 본문]:
     {body_text[:2500]}
 
-    반드시 아래 JSON 형식으로만 순수 텍스트(Markdown 코드블록 없이)로 출력하세요:
+    반드시 아래 JSON 형식으로만 순수 텍스트로 출력하세요:
     {{
-      "deadline": "정확한 마감/신청/운영 기간 (연도.월.일 형식 포함, 없으면 '상세 본문 참조')",
+      "deadline": "정확한 마감/신청/운영 기간 (연도.월.일 형식 포함, 없으면 '본문 참조')",
       "target": "지원 대상 및 자격 요건 (1문장)",
       "bullets": [
-        "핵심 내용 요약 1",
-        "핵심 내용 요약 2",
-        "핵심 내용 요약 3"
+        "핵심 요약 1",
+        "핵심 요약 2",
+        "핵심 요약 3"
       ]
     }}
     """
@@ -195,6 +198,7 @@ def get_notice_body(detail_url):
 
 def send_email(subject, html_content):
   if not GMAIL_USER or not GMAIL_APP_KEY:
+    print("이메일 환경변수가 누락되었습니다.")
     return
   msg = MIMEMultipart("alternative")
   msg["Subject"] = subject
@@ -261,7 +265,16 @@ def main():
     html += "</div>"
     send_email(subject, html)
   else:
-    print("새로운 맞춤 공지 없음.")
+    # 👉 새 공지가 없을 때도 메일 발송
+    subject = "🔔 [인하대 공지 알리미] 오늘 새로 등록된 맞춤 공지가 없습니다."
+    html = """
+        <div style="font-family: Arial, sans-serif; max-width: 620px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+            <h3 style="color: #5f6368;">🔔 오늘 신규 맞춤 공지 안내</h3>
+            <p style="font-size: 14px; color: #3c4043;">오늘 인하대 메인 공지 및 신소재공학과 공지사항에 새로 올라온 필수 맞춤 공지가 없습니다.</p>
+            <p style="font-size: 12px; color: #80868b;">(반도체/데이터 분석 프로젝트, 장학금, 필수 학사공지 기준 모니터링 완료)</p>
+        </div>
+        """
+    send_email(subject, html)
 
 
 if __name__ == "__main__":
