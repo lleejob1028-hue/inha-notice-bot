@@ -2,8 +2,8 @@ name: Inha Notice Crawler & Mailer
 
 on:
   schedule:
-    # 매일 한국 시간 오전 11:00 실행 (UTC 기준 02:00)
-    - cron: '0 2 * * *'
+    # 매일 한국 시간 오전 10:50 실행 (UTC 기준 01:50, 정각 대기열 혼잡 방지)
+    - cron: '50 1 * * *'
   workflow_dispatch: # 수동 즉시 실행 버튼 활성화
 
 jobs:
